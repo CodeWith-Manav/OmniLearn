@@ -17,3 +17,10 @@ venv/
 Thumbs.db
 .idea/
 .vscode/
+
+# LiveKit local source checkouts (installed via requirements.txt)
+livekit-agents/
+livekit-plugins/
+examples/
+scripts/
+

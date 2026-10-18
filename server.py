@@ -21,19 +21,36 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "").strip()
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "").strip()
 PORT = int(os.getenv("PORT", "7860"))
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+BASE_DIR = Path(__file__).resolve().parent
+SEARCH_DIRS = [
+    BASE_DIR / "static",
+    BASE_DIR / "public",
+    BASE_DIR / "public" / "static",
+    BASE_DIR,
+    Path.cwd() / "static",
+    Path.cwd() / "public",
+    Path.cwd(),
+]
+
+
+def find_file(filename: str) -> Path | None:
+    for directory in SEARCH_DIRS:
+        target = directory / filename
+        if target.is_file():
+            return target
+    return None
 
 
 async def get_token_handler(request: web.Request) -> web.Response:
     if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or not LIVEKIT_URL:
         return web.json_response(
-            {"error": "LiveKit API Key, Secret, or URL is not configured in .env"},
+            {"error": "LiveKit API Key, Secret, or URL is not configured in environment variables"},
             status=500,
         )
 
-    room_name = request.query.get("room", f"room-{uuid.uuid4().hex[:6]}")
+    room_name = request.query.get("room", f"omni-{uuid.uuid4().hex[:6]}")
     identity = request.query.get("identity", f"user-{uuid.uuid4().hex[:6]}")
-    name = request.query.get("name", "User")
+    name = request.query.get("name", "Student")
 
     try:
         token = (
@@ -77,10 +94,23 @@ async def status_handler(request: web.Request) -> web.Response:
 
 
 async def index_handler(request: web.Request) -> web.Response:
-    index_file = STATIC_DIR / "index.html"
-    if not index_file.exists():
-        return web.Response(text="Frontend index.html not found.", status=404)
-    return web.FileResponse(index_file)
+    index_file = find_file("index.html")
+    if index_file and index_file.exists():
+        return web.FileResponse(index_file)
+    logger.error("index.html not found in search paths: %s", [str(p) for p in SEARCH_DIRS])
+    return web.Response(
+        text="Frontend index.html not found. Please ensure static/index.html or public/index.html exists in your repository.",
+        status=404,
+        content_type="text/plain",
+    )
+
+
+async def serve_static_file(request: web.Request) -> web.Response:
+    filename = request.match_info.get("filename", "")
+    target = find_file(filename)
+    if target and target.is_file():
+        return web.FileResponse(target)
+    return web.Response(text=f"Static file '{filename}' not found.", status=404)
 
 
 async def solve_handler(request: web.Request) -> web.Response:
@@ -193,16 +223,35 @@ async def cors_middleware(request: web.Request, handler):
     return response
 
 
+async def serve_static_file_named(request: web.Request, name: str) -> web.Response:
+    target = find_file(name)
+    if target and target.is_file():
+        return web.FileResponse(target)
+    return web.Response(text=f"File '{name}' not found.", status=404)
+
+
 def create_app() -> web.Application:
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/", index_handler)
+    app.router.add_get("/index.html", index_handler)
+    app.router.add_get("/style.css", lambda r: serve_static_file_named(r, "style.css"))
+    app.router.add_get("/app.js", lambda r: serve_static_file_named(r, "app.js"))
     app.router.add_get("/api/token", get_token_handler)
     app.router.add_get("/api/status", status_handler)
     app.router.add_get("/api/health", health_handler)
     app.router.add_post("/api/ai/solve", solve_handler)
     app.router.add_post("/api/ai/chat", chat_handler)
-    if STATIC_DIR.exists():
-        app.router.add_static("/static/", STATIC_DIR, show_index=False)
+    app.router.add_get("/static/{filename:.*}", serve_static_file)
+    app.router.add_get("/public/{filename:.*}", serve_static_file)
+
+    for directory in [BASE_DIR / "static", BASE_DIR / "public"]:
+        if directory.exists():
+            try:
+                app.router.add_static("/static/", directory, show_index=False)
+            except Exception:
+                pass
+            break
+
     return app
 
 
